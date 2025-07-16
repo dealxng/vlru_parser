@@ -1,21 +1,18 @@
-import os
 import re
 import time
-import logging
-import configparser
-import hashlib
-from datetime import datetime
 import pandas as pd
 import psycopg2
-from psycopg2.extras import execute_values
+from datetime import datetime
+import hashlib
+import logging
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
+import os
 
 # Настройка логирования
 logging.basicConfig(
@@ -29,330 +26,239 @@ logging.basicConfig(
 logger = logging.getLogger('VGU_Parser')
 
 
-class DatabaseManager:
-    """Менеджер для работы с базой данных PostgreSQL"""
+def setup_driver():
+    """Настройка и запуск Chrome WebDriver"""
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument(
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 
-    def __init__(self, db_config):
-        self.config = db_config
-        self.conn = None
-
-    def connect(self):
-        """Установка соединения с базой данных"""
+    try:
+        # Используем системный ChromeDriver
+        driver = webdriver.Chrome(options=chrome_options)
+        return driver
+    except Exception as e:
+        logger.error(f"Ошибка при создании драйвера: {str(e)}")
+        # Попробуем ручную установку
         try:
-            self.conn = psycopg2.connect(
-                dbname=self.config['dbname'],
-                user=self.config['user'],
-                password=self.config['password'],
-                host=self.config.get('host', 'localhost'),
-                port=self.config.get('port', '5432')
-            )
-            logger.info("Успешное подключение к PostgreSQL")
-            return True
-        except Exception as e:
-            logger.error(f"Ошибка подключения к БД: {str(e)}")
-            return False
-
-    def disconnect(self):
-        """Закрытие соединения с базой данных"""
-        if self.conn:
-            self.conn.close()
-            logger.info("Соединение с PostgreSQL закрыто")
-
-    def save_reviews(self, reviews):
-        """Сохранение отзывов в базу данных"""
-        if not reviews:
-            logger.warning("Нет данных для сохранения в БД")
-            return
-
-        if not self.connect():
-            return
-
-        inserted = 0
-        duplicates = 0
-        errors = 0
-
-        try:
-            with self.conn.cursor() as cursor:
-                # Подготовка данных
-                data = [(
-                    r['author'],
-                    r['date'],
-                    r['rating'],
-                    r['text'],
-                    r['hash']
-                ) for r in reviews]
-
-                # Пакетная вставка
-                execute_values(
-                    cursor,
-                    """
-                    INSERT INTO reviews (author, review_date, rating, content, review_hash)
-                    VALUES %s
-                    ON CONFLICT (review_hash) DO NOTHING
-                    """,
-                    data,
-                    page_size=100
-                )
-
-                inserted = cursor.rowcount
-                duplicates = len(reviews) - inserted
-
-            self.conn.commit()
-            logger.info(f"Сохранено в БД: {inserted} новых, {duplicates} дубликатов")
-
-        except psycopg2.Error as e:
-            errors = len(reviews)
-            logger.error(f"Ошибка при сохранении в БД: {str(e)}")
-            self.conn.rollback()
-        finally:
-            self.disconnect()
-
-        return {
-            'inserted': inserted,
-            'duplicates': duplicates,
-            'errors': errors
-        }
-
-
-class VGUReviewParser:
-    """Парсер отзывов о ВГУЭС с сайта vl.ru"""
-
-    def __init__(self, config_path='config/config.ini'):
-        self.config = self.load_config(config_path)
-        self.driver = self.setup_driver()
-        self.db_manager = DatabaseManager(self.config['Database'])
-
-    def load_config(self, config_path):
-        """Загрузка конфигурации из файла"""
-        config = configparser.ConfigParser()
-        try:
-            config.read(config_path)
-            logger.info(f"Конфигурация загружена из {config_path}")
-            return config
-        except Exception as e:
-            logger.error(f"Ошибка загрузки конфигурации: {str(e)}")
-            # Возвращаем конфиг по умолчанию
-            return self.get_default_config()
-
-    def get_default_config(self):
-        """Конфигурация по умолчанию"""
-        config = configparser.ConfigParser()
-
-        # Настройки базы данных
-        config['Database'] = {
-            'dbname': 'reviews_db',
-            'user': 'postgres',
-            'password': 'your_password',
-            'host': 'localhost',
-            'port': '5432'
-        }
-
-        # Настройки Selenium
-        config['Selenium'] = {
-            'headless': 'True',
-            'window_size': '1920,1080',
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'use_webdriver_manager': 'True'
-        }
-
-        # Настройки парсера
-        config['Website'] = {
-            'url': 'https://www.vl.ru/vgues-vladivostoxkij-gosudarstvennyj-universitet'
-        }
-
-        config['Parser'] = {
-            'max_reviews': '10'
-        }
-
-        config['Output'] = {
-            'directory': 'data/output'
-        }
-
-        return config
-
-    def setup_driver(self):
-        """Настройка веб-драйвера для Selenium"""
-        chrome_options = Options()
-
-        # Конфигурация опций из файла
-        if self.config.getboolean('Selenium', 'headless', fallback=True):
-            chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument(f"--window-size={self.config.get('Selenium', 'window_size', fallback='1920,1080')}")
-        chrome_options.add_argument(
-            f"user-agent={self.config.get('Selenium', 'user_agent', fallback='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')}")
-
-        # Настройка драйвера
-        try:
-            if self.config.getboolean('Selenium', 'use_webdriver_manager', fallback=True):
-                driver = webdriver.Chrome(
-                    service=Service(ChromeDriverManager().install()),
-                    options=chrome_options
-                )
-            else:
-                driver_path = self.config.get('Selenium', 'driver_path', fallback='')
-                service = Service(driver_path) if driver_path else None
-                driver = webdriver.Chrome(service=service, options=chrome_options)
-
-            logger.info("Веб-драйвер успешно инициализирован")
+            driver_path = os.path.join(os.getcwd(), "chromedriver.exe")
+            service = Service(driver_path)
+            driver = webdriver.Chrome(service=service, options=chrome_options)
             return driver
         except Exception as e:
-            logger.error(f"Ошибка инициализации веб-драйвера: {str(e)}")
-            # Попробуем ручную настройку
-            try:
-                driver = webdriver.Chrome(options=chrome_options)
-                return driver
-            except Exception as e:
-                logger.critical(f"Не удалось инициализировать веб-драйвер: {str(e)}")
-                raise
+            logger.error(f"Ошибка при ручной настройке драйвера: {str(e)}")
+            raise
 
-    def parse_reviews(self, max_reviews=10):
-        """Парсинг отзывов с сайта"""
-        logger.info("Запуск процесса парсинга отзывов")
-        url = self.config.get('Website', 'url',
-                              fallback='https://www.vl.ru/vgues-vladivostoxkij-gosudarstvennyj-universitet')
 
-        try:
-            logger.info(f"Загрузка страницы: {url}")
-            self.driver.get(url)
+def parse_reviews():
+    """Парсинг отзывов с использованием Selenium"""
+    logger.info("Начало парсинга отзывов с использованием Selenium")
+    URL = "https://www.vl.ru/vgues-vladivostoxkij-gosudarstvennyj-universitet"
 
-            # Ожидание загрузки контента
-            WebDriverWait(self.driver, 20).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "div.comments-list, li[data-type]"))
-            )
-            logger.info("Основной контент страницы загружен")
+    driver = None
+    try:
+        driver = setup_driver()
+        logger.info(f"Загрузка страницы: {URL}")
+        driver.get(URL)
 
-            # Прокрутка для загрузки динамического контента
-            logger.info("Выполнение прокрутки для загрузки отзывов")
-            for _ in range(3):
-                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(2)
+        # Ожидание загрузки страницы
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "div.comments-list, li[data-type]"))
+        )
+        logger.info("Основная страница загружена")
 
-            # Парсинг HTML
-            soup = BeautifulSoup(self.driver.page_source, 'html.parser')
-            review_blocks = soup.select('li[data-type="review"]')
-            logger.info(f"Найдено блоков отзывов: {len(review_blocks)}")
+        # Прокрутка страницы
+        logger.info("Прокрутка страницы для загрузки отзывов...")
+        for _ in range(2):
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(3)
 
-            if not review_blocks:
-                logger.warning("Отзывы не обнаружены. Возможно изменилась структура сайта.")
-                return []
+        # Получение HTML
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, 'html.parser')
 
-            # Обработка отзывов
-            reviews = []
-            for i, block in enumerate(review_blocks[:max_reviews]):
-                try:
-                    review_data = self.parse_review_block(block)
-                    if review_data:
-                        reviews.append(review_data)
-                        logger.info(f"Отзыв #{i + 1} обработан: {review_data['author']}, {review_data['date']}")
-                except Exception as e:
-                    logger.error(f"Ошибка обработки отзыва #{i + 1}: {str(e)}")
+        # Поиск блоков с отзывами
+        review_blocks = soup.select('li[data-type="review"]')
+        logger.info(f"Найдено блоков отзывов: {len(review_blocks)}")
 
-            logger.info(f"Успешно обработано отзывов: {len(reviews)}/{max_reviews}")
-            return reviews
-
-        except Exception as e:
-            logger.error(f"Критическая ошибка при парсинге: {str(e)}")
+        if not review_blocks:
             return []
 
-    def parse_review_block(self, block):
-        """Извлечение данных из блока отзыва"""
-        # Дата публикации
-        timestamp = block.get('data-timestamp')
-        date = datetime.utcfromtimestamp(int(timestamp)).date() if timestamp else None
+        # Сбор последних 10 отзывов
+        reviews = []
+        for i, block in enumerate(review_blocks[:10]):
+            try:
+                # Извлечение данных
+                timestamp = block.get('data-timestamp')
+                if timestamp:
+                    timestamp = int(timestamp)
+                    date = datetime.utcfromtimestamp(timestamp).date()
+                else:
+                    date = None
 
-        # Рейтинг
-        rating_value = block.get('user-rating', '0')
-        try:
-            rating_value = float(rating_value)
-            # Конвертация в 5-балльную систему с защитой от некорректных значений
-            rating = max(1, min(5, round(rating_value * 5))) if rating_value > 0 else 1
-        except ValueError:
-            rating = 1
+                rating_value = block.get('user-rating')
+                if rating_value:
+                    try:
+                        rating_value = float(rating_value)
+                        if rating_value > 0:
+                            rating = min(5, max(1, round(rating_value * 5)))
+                        else:
+                            rating = 1
+                    except ValueError:
+                        rating = 1
+                else:
+                    rating = 1
 
-        # Автор
-        author_elem = block.select_one('span.user-name, .cmt-user-name span')
-        author = author_elem.text.strip() if author_elem else "Аноним"
+                # Автор
+                author_elem = block.select_one('span.user-name, .cmt-user-name span')
+                author = author_elem.text.strip() if author_elem else "Аноним"
 
-        # Текст отзыва
-        text_elem = block.select_one('p.comment-text, .comment-text')
-        text = text_elem.text.strip() if text_elem else ""
-        text = re.sub(r'\*{3,}', '', text)  # Удаление цензуры
-        text = re.sub(r'\s+', ' ', text)  # Нормализация пробелов
+                # Текст
+                text_elem = block.select_one('p.comment-text, .comment-text')
+                text = text_elem.text.strip() if text_elem else ""
 
-        # Уникальный хэш
-        review_hash = hashlib.sha256(f"{author}{timestamp}{text}".encode()).hexdigest()
+                # Очистка текста
+                if text:
+                    text = re.sub(r'\*{3,}', '', text)
+                    text = re.sub(r'\s+', ' ', text)
 
-        return {
-            'author': author,
-            'date': date,
-            'rating': rating,
-            'text': text,
-            'hash': review_hash
-        }
+                # Хэш
+                review_hash = hashlib.sha256(f"{author}{timestamp}{text}".encode()).hexdigest()
 
-    def save_to_files(self, reviews, output_dir='output'):
-        """Экспорт данных в файлы"""
-        if not reviews:
-            logger.warning("Нет данных для экспорта")
-            return
+                reviews.append({
+                    'author': author,
+                    'date': date,
+                    'rating': rating,
+                    'text': text,
+                    'hash': review_hash
+                })
 
-        try:
-            os.makedirs(output_dir, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            except Exception as e:
+                logger.error(f"Ошибка обработки отзыва #{i + 1}: {str(e)}")
+                continue
 
-            # CSV
-            csv_path = os.path.join(output_dir, f'vgu_reviews_{timestamp}.csv')
-            pd.DataFrame(reviews).to_csv(csv_path, index=False, encoding='utf-8-sig')
-            logger.info(f"Данные экспортированы в CSV: {csv_path}")
+        return reviews
 
-            # Excel
-            excel_path = os.path.join(output_dir, f'vgu_reviews_{timestamp}.xlsx')
-            pd.DataFrame(reviews).to_excel(excel_path, index=False)
-            logger.info(f"Данные экспортированы в Excel: {excel_path}")
+    except Exception as e:
+        logger.error(f"Критическая ошибка: {str(e)}")
+        return []
+    finally:
+        if driver:
+            driver.quit()
 
-        except Exception as e:
-            logger.error(f"Ошибка экспорта данных: {str(e)}")
 
-    def run(self):
-        """Основной рабочий процесс"""
-        try:
-            logger.info("=" * 50)
-            logger.info("ЗАПУСК ПАРСЕРА ОТЗЫВОВ ВГУЭС")
-            logger.info("=" * 50)
+def save_to_files(reviews):
+    """Сохраняет отзывы в CSV и Excel файлы"""
+    if not reviews:
+        return
 
-            # Парсинг данных
-            reviews = self.parse_reviews(
-                max_reviews=self.config.getint('Parser', 'max_reviews', fallback=10)
-            )
+    try:
+        timestamp = int(time.time())
+        df = pd.DataFrame(reviews)
+        df_output = df.drop(columns=['hash'])
 
-            if reviews:
-                # Экспорт в файлы
-                output_dir = self.config.get('Output', 'directory', fallback='data/output')
-                self.save_to_files(reviews, output_dir)
+        # CSV
+        csv_file = f'vgu_reviews_{timestamp}.csv'
+        df_output.to_csv(csv_file, index=False, encoding='utf-8-sig')
+        logger.info(f"Данные сохранены в {csv_file}")
 
-                # Сохранение в БД
-                self.db_manager.save_reviews(reviews)
+        # Excel
+        excel_file = f'vgu_reviews_{timestamp}.xlsx'
+        df_output.to_excel(excel_file, index=False)
+        logger.info(f"Данные сохранены в {excel_file}")
 
-            logger.info("ПРОЦЕСС ЗАВЕРШЕН УСПЕШНО")
-            return True
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении файлов: {str(e)}")
 
-        except Exception as e:
-            logger.error(f"КРИТИЧЕСКАЯ ОШИБКА: {str(e)}")
-            return False
-        finally:
-            if self.driver:
-                self.driver.quit()
-                logger.info("Веб-драйвер остановлен")
+
+def save_to_db(reviews):
+    """Сохраняет отзывы в PostgreSQL"""
+    if not reviews:
+        return
+
+    conn = None
+    try:
+        # Подключение к базе данных (ЗАМЕНИТЕ ПАРАМЕТРЫ НА СВОИ!)
+        conn = psycopg2.connect(
+            dbname="reviews_db",
+            user="postgres",
+            password="5205055",  # Замените на ваш пароль
+            host="localhost",
+            port="5432"
+        )
+
+        inserted_count = 0
+        duplicate_count = 0
+        error_count = 0
+
+        # Создаем курсор для выполнения SQL-запросов
+        with conn.cursor() as cursor:
+            for review in reviews:
+                try:
+                    # Вставка данных в таблицу
+                    cursor.execute(
+                        """
+                        INSERT INTO reviews (author, review_date, rating, content, review_hash)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (review_hash) DO NOTHING
+                        """,
+                        (
+                            review['author'],
+                            review['date'],
+                            review['rating'],
+                            review['text'],
+                            review['hash']
+                        )
+                    )
+
+                    # Подсчет результатов
+                    if cursor.rowcount > 0:
+                        inserted_count += 1
+                    else:
+                        duplicate_count += 1
+
+                except psycopg2.Error as e:
+                    error_count += 1
+                    logger.error(f"Ошибка БД при вставке отзыва: {str(e)}")
+                    # Продолжаем обработку следующих отзывов
+                    continue
+
+            # Фиксируем изменения в базе данных
+            conn.commit()
+
+        logger.info(
+            f"Результат сохранения в БД: Успешно: {inserted_count}, Дубликатов: {duplicate_count}, Ошибок: {error_count}")
+
+    except psycopg2.Error as e:
+        logger.error(f"Ошибка подключения к PostgreSQL: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
 
 
 if __name__ == "__main__":
-    # Определение пути к конфигурационному файлу
-    config_path = 'config/config.ini'
-    if not os.path.exists(config_path):
-        logger.warning(f"Конфигурационный файл {config_path} не найден. Будет использована конфигурация по умолчанию.")
+    logger.info("=" * 50)
+    logger.info(" ЗАПУСК ПАРСЕРА ОТЗЫВОВ ВВГУ ")
+    logger.info("=" * 50)
 
-    parser = VGUReviewParser(config_path)
-    parser.run()
+    logger.info("Этап 1: Парсинг отзывов")
+    reviews = parse_reviews()
+
+    if reviews:
+        logger.info(f"Успешно собрано отзывов: {len(reviews)}")
+
+        logger.info("Этап 2: Сохранение в файлы")
+        save_to_files(reviews)
+
+        logger.info("Этап 3: Сохранение в базу данных")
+        save_to_db(reviews)
+    else:
+        logger.warning("Не удалось собрать отзывы")
+
+    logger.info("=" * 50)
+    logger.info(" РАБОТА ПАРСЕРА ЗАВЕРШЕНА ")
+    logger.info("=" * 50)
