@@ -182,7 +182,7 @@ def save_to_db(reviews):
 
     conn = None
     try:
-        # Подключение к базе данных (ЗАМЕНИТЕ ПАРАМЕТРЫ НА СВОИ!)
+        # Подключение к базе данных
         conn = psycopg2.connect(
             dbname="reviews_db",
             user="postgres",
