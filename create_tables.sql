@@ -16,7 +16,7 @@ CREATE INDEX IF NOT EXISTS idx_reviews_rating ON reviews(rating);
 CREATE INDEX IF NOT EXISTS idx_reviews_hash ON reviews(review_hash);
 
 -- Комментарии к таблице и полям
-COMMENT ON TABLE reviews IS 'Таблица для хранения отзывов о ВГУЭС';
+COMMENT ON TABLE reviews IS 'Таблица для хранения отзывов о ВВГУ';
 COMMENT ON COLUMN reviews.author IS 'Автор отзыва';
 COMMENT ON COLUMN reviews.review_date IS 'Дата публикации отзыва';
 COMMENT ON COLUMN reviews.rating IS 'Оценка (1-5 звезд)';
