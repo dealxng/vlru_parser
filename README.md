@@ -20,6 +20,22 @@
 - Google Chrome (для работы Selenium)
 - Установленные зависимости из `requirements.txt`
 
+## Важно!
+
+- Для подключение к вашей датабазе в коде с 183 по 196 строку представленна функция для подключения
+```bash
+conn = None
+    try:
+        # Подключение к базе данных
+        conn = psycopg2.connect(
+            dbname="reviews_db",
+            user="postgres",
+            password="your_password",  # Замените на ваш пароль
+            host="localhost",
+            port="5432"
+        )
+```
+
 ## Установка
 
 1. Клонируйте репозиторий:
