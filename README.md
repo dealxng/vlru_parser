@@ -43,7 +43,7 @@ git clone https://github.com/yourusername/vgu-reviews-parser.git
 cd vgu-reviews-parser
 ```
 
-##Описание работы
+## Описание работы
 
 -Инициализация драйвера:
 Настройка headless-режима Chrome
