@@ -23,13 +23,14 @@
 ## Важно!
 
 - Для подключение к вашей датабазе в коде с 183 по 196 строку представленна функция для подключения
+- При необходимости данные в ней нужно заменить
 ```bash
 conn = None
     try:
         # Подключение к базе данных
         conn = psycopg2.connect(
             dbname="reviews_db",
-            user="postgres",
+            user="postgres", 
             password="your_password",  # Замените на ваш пароль
             host="localhost",
             port="5432"
